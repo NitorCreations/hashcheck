@@ -1,22 +1,13 @@
 (ns hashcheck.core
   (:gen-class)
   (:require
+   [clojure.edn :as edn]
    [clojure.java.io :as io]
    [clojure.string :as string]
    [clojure.test :refer [deftest is]])
   (:import
    [java.io File FileInputStream]
    [java.security MessageDigest]))
-
-;; (defn get-all-files [dir]
-;;   (let [d (File. dir)]
-;;     (if (.isDirectory d)
-;;       (mapcat (fn [f]
-;;                 (if (.isDirectory f)
-;;                   (get-all-files (.getPath f))
-;;                   [f]))
-;;               (.listFiles d))
-;;       [])))
 
 (defn transduce-leaves
   ([root children reducer]
@@ -61,35 +52,26 @@
                                nil))
                            conj))))
 
-(defn transduce-files
-  ([directory-path reducer]
-   (transduce-files directory-path reducer (reducer) identity))
-
-  ([directory-path reducer initial-value]
-   (transduce-files directory-path reducer initial-value identity))
-
-  ([directory-path reducer initial-value transducer]
-   (transduce-leaves (File. directory-path)
-                     (fn [file]
-                       (when (.isDirectory file)
-                         (.listFiles file)))
-                     reducer
-                     initial-value
-                     transducer)))
-
-(defn process-files!
-  ([directory-path process-file!]
-   (process-files! directory-path process-file! identity))
-
-  ([directory-path process-file! transducer]
-   (transduce-files directory-path
-                    (completing (fn [_value file]
-                                  (process-file! file)))
+(defn transduce-files! [directory-path transducer]
+  (transduce-leaves (File. directory-path)
+                    (fn [file]
+                      (when (.isDirectory file)
+                        (.listFiles file)))
+                    (constantly nil)
                     nil
-                    transducer)))
+                    transducer))
+(defn take-until-stopped [stopped?-atom]
+  (fn [rf]
+    (fn
+      ([] (rf))
+      ([result] (rf result))
+      ([result input]
+       (if @stopped?-atom
+         (ensure-reduced result)
+         (rf result input))))))
 
-(defn sha256-hash [file-path]
-  (let [digest (MessageDigest/getInstance "SHA-256")]
+(defn md5 [file-path]
+  (let [digest (MessageDigest/getInstance "MD5" #_"SHA-256")]
     (with-open [fis (FileInputStream. (File. file-path))]
       (let [buffer (byte-array 8192)]
         (loop []
@@ -102,80 +84,59 @@
              (map #(format "%02x" (bit-and % 255))
                   hash-bytes)))))
 
-;; (defn hash-files [files]
-;;   (map (fn [file]
-;;          {:file file
-;;           :hash (sha256-hash file)})
-;;        files))
-
-;; (comment
-;;   (transduce-files "temp/hashtest" conj)
-
-;;   (->> (get-all-files "/Users/jukka/nitor-src/hashcheck/temp/hashtest")
-;;        (map File/.getAbsolutePath)
-;;        hash-files)
-;;   (.getAbsolutePath ^java.io.File (File. "temp/hashtest"))
-
-
-;;   )
-
-;; (defn list-files [directory-path list-file-path]
-;;   (
-;;    (let [already-listed-files-set (if (.exists (File. list-file-path))
-;;                                     (with-open [reader (io/reader list-file-path)]
-;;                                       (into #{} (line-seq reader)))
-;;                                     #{})]
-;;      (transduce-files directory-path (fn [file]
-;;                                        )(constantly nil) nil ))))
-
-(defn take-while-atom [take-more?-atom]
-  (fn [rf]
-    (fn
-      ([] (rf))
-      ([result] (rf result))
-      ([result input]
-       (if @take-more?-atom
-         (rf result input)
-         (ensure-reduced result))))))
-
-(defn write-file-paths [directory-path output-file-path]
-  (let [running?-atom (atom true)
-        already-listed-files-set (if (.exists (File. output-file-path))
+(defn write-file-hashes [directory-path output-file-path]
+  (let [stopped?-atom (atom false)
+        already-hashed-files-set (if (.exists (File. output-file-path))
                                    (with-open [reader (io/reader output-file-path)]
-                                     (into #{} (line-seq reader)))
+                                     (->> (line-seq reader)
+                                          (map edn/read-string)
+                                          (map :path)
+                                          (into #{})))
                                    #{})
         directory-path-length (count (.getAbsolutePath (File. directory-path)))
-        count-atom (atom 0)]
-
+        written-count-atom (atom 0)
+        processed-count-atom (atom 0)]
     (with-open [writer (io/writer output-file-path :append true)]
       (.addShutdownHook (Runtime/getRuntime)
                         (Thread. (fn []
-                                   (reset! running?-atom false)
+                                   (reset! stopped?-atom true)
                                    (println "sutting down")
                                    (Thread/sleep 500))))
-      (process-files! directory-path
-                      (fn [file-path]
-                        (.write writer
-                                (str file-path
-                                     "\n"))
-                        (.flush writer)
-                        (swap! count-atom inc)
-                        (when (= 0 (mod @count-atom 50000))
-                          (println @count-atom "paths have been written")))
-                      (comp (map (fn [file]
-                                   (subs (.getAbsolutePath file)
-                                         (inc directory-path-length))))
-                            (remove already-listed-files-set)
-                            (take-while-atom running?-atom))))
-    (if @running?-atom
-      (println "All paths were written.")
-      (println "Got interrupted after writing" @count-atom "paths"))))
+      (transduce-files! directory-path
+                        (comp (take-until-stopped stopped?-atom)
+                              (map (fn [file]
+                                     (when (and (not (= 0 @processed-count-atom))
+                                                (= 0 (mod @processed-count-atom 500)))
+                                       (println @processed-count-atom
+                                                "files have been processed out of which"
+                                                (- @processed-count-atom
+                                                   @written-count-atom)
+                                                "were already in the target file."))
+                                     (swap! processed-count-atom inc)
+                                     (subs (.getAbsolutePath file)
+                                           (inc directory-path-length))))
+                              (remove already-hashed-files-set)
+                              (map (fn [path]
+                                     (.write writer
+                                             (str (pr-str {:path path
+                                                           :md5 (md5 (str directory-path "/" path))})
+                                                  "\n"))
+                                     (.flush writer)
+                                     (swap! written-count-atom inc))))))
+    (if @stopped?-atom
+      (println "Got interrupted.")
+      (println "All files were processed."))
+    (println "Wrote" @written-count-atom "files.")
+    (when (not (= @written-count-atom
+                  @processed-count-atom))
+      (println (- @processed-count-atom
+                  @written-count-atom) "hashes were already in the target file."))))
 
 (comment
-  (write-file-paths "temp/hashtest" "temp/file-list")
+  (write-file-hashes "temp/hashtest" "temp/file-hashes")
   ) ;; TODO: remove me
 
-(def commands [#'write-file-paths])
+(def commands [#'write-file-hashes])
 
 (defn -main [& command-line-arguments]
   (let [[command-name & arguments] command-line-arguments]
@@ -200,11 +161,3 @@
                                     "\n"
                                     (:doc (meta command-var)))))
                         (string/join "------------------------\n")))))))
-
-
-;; write clojure code that registeres a funciton to be called before the process is shut down
-(defn add-shutdown-hook [f]
-  (.addShutdownHook (Runtime/getRuntime) (Thread. f)))
-
-
-;; (add-shutdown-hook #(println "Process shutting down..."))

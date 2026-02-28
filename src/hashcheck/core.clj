@@ -74,7 +74,7 @@
          (ensure-reduced result)
          (rf result input))))))
 
-(defn md5 [stopped?-atom processed-byte-count-atom file-path]
+(defn md5 [stopped?-atom add-byte-count file-path]
   (let [digest (MessageDigest/getInstance "MD5" #_"SHA-256")]
     (with-open [fis (FileInputStream. (File. file-path))]
       (let [buffer (byte-array 8192)]
@@ -84,7 +84,7 @@
           (let [len (.read fis buffer)]
             (when (pos? len)
               (.update digest buffer 0 len)
-              (swap! processed-byte-count-atom + len)
+              (add-byte-count len)
               (recur))))))
     (let [hash-bytes (.digest digest)]
       (apply str
@@ -134,105 +134,122 @@
   (.format (LocalTime/now)
            (DateTimeFormatter/ofPattern "HH:mm:ss")))
 
-(defn write-file-hashes [directory-path output-file-path]
-  (let [stopped?-atom (atom false)
-        hash-file-rows (if (.exists (File. output-file-path))
-                         (read-hash-file output-file-path)
-                         [])
-        previously-processed-byte-count (reduce + (map :byte-count hash-file-rows))
-        already-hashed-files-set (->> hash-file-rows
-                                      (map :path)
-                                      (into #{}))
-        directory-path-length (count (.getAbsolutePath (File. directory-path)))
-        written-hashes-count-atom (atom 0)
-        processed-files-count-atom (atom 0)
-        error-count-atom (atom 0)
-        start-time (System/currentTimeMillis)
-        currently-processed-path-path (atom nil)
-        processed-byte-count-atom (atom 0)
-        reporting-interval-in-milliseconds 6000]
-    (with-open [writer (io/writer output-file-path :append true)]
-      (.addShutdownHook (Runtime/getRuntime)
-                        (Thread. (fn []
-                                   (reset! stopped?-atom true)
-                                   (Thread/sleep 1000))))
-      (.start (Thread. (fn []
-                         (loop [previously-reported-file-count 0
-                                previously-reported-byte-count 0]
-                           (let [processed-files-count @processed-files-count-atom
-                                 processed-byte-count @processed-byte-count-atom]
-                             (Thread/sleep reporting-interval-in-milliseconds)
-                             (when (not @stopped?-atom)
-                               (println (current-time-stamp)
-                                        "processed"
-                                        (- processed-files-count
-                                           previously-reported-file-count)
-                                        "files"
-                                        (format-bytes (- processed-byte-count
-                                                         previously-reported-byte-count))
-                                        "bytes"
-                                        (format-bytes processed-byte-count) " in total"
-                                        (format-bytes (* (/ (- processed-byte-count
-                                                               previously-reported-byte-count)
-                                                            reporting-interval-in-milliseconds)
-                                                         1000 60 60))
-                                        "per hour"
-                                        processed-files-count "files in total"
-                                        (- processed-files-count
-                                           @written-hashes-count-atom)
-                                        "files were already in the target file")
+(defn write-file-hashes
+  ([archive-directory-path output-file-path]
+   (write-file-hashes archive-directory-path archive-directory-path output-file-path))
+  ([archive-directory-path source-directory-path output-file-path]
+   (let [stopped?-atom (atom false)
+         hash-file-rows (if (.exists (File. output-file-path))
+                          (read-hash-file output-file-path)
+                          [])
+         previously-hashed-file-count (count hash-file-rows)
+         previously-processed-byte-count (reduce + (map :byte-count hash-file-rows))
+         already-hashed-files-set (->> hash-file-rows
+                                       (map :path)
+                                       (into #{}))
+         archive-directory-path-length (count (.getAbsolutePath (File. archive-directory-path)))
+         state-atom (atom {:written-hashes-count 0
+                           :processed-files-count 0
+                           :processed-byte-count 0
+                           :currently-processed-path nil
+                           :error-count 0})
+         start-time (System/currentTimeMillis)
+         reporting-interval-in-milliseconds 30000]
+     (with-open [writer (io/writer output-file-path :append true)]
+       (.addShutdownHook (Runtime/getRuntime)
+                         (Thread. (fn []
+                                    (reset! stopped?-atom true)
+                                    (Thread/sleep 1000))))
+       (.start (Thread. (fn []
+                          (loop [previously-reported-file-count 0
+                                 previously-reported-byte-count 0]
+                            (let [state @state-atom]
+                              (Thread/sleep reporting-interval-in-milliseconds)
+                              (when (not @stopped?-atom)
+                                (println (current-time-stamp)
+                                         "processed"
+                                         (- (:processed-files-count state)
+                                            previously-reported-file-count)
+                                         "files"
+                                         (format-bytes (- (:processed-byte-count state)
+                                                          previously-reported-byte-count))
+                                         "bytes"
+                                         (format-bytes (:processed-byte-count state)) "in total"
+                                         (format-bytes (* (/ (- (:processed-byte-count state)
+                                                                previously-reported-byte-count)
+                                                             reporting-interval-in-milliseconds)
+                                                          1000 60 60))
+                                         "per hour"
+                                         (:processed-files-count state) "files in total"
+                                         previously-hashed-file-count
+                                         "files were already in the target file")
 
-                               #_(reset! processed-byte-count-atom 0)
+                                #_(reset! processed-byte-count-atom 0)
 
-                               (when (some? @currently-processed-path-path)
-                                 (println (str "Currently processing: "
-                                               @currently-processed-path-path
-                                               " ("
-                                               (format-bytes (.length (File. (str directory-path
-                                                                                  "/"
-                                                                                  @currently-processed-path-path))))
-                                               ")")))
-                               (recur processed-files-count
-                                      processed-byte-count)))))))
-      (transduce-files! directory-path
-                        (comp (take-until-stopped stopped?-atom)
-                              (map (fn [file]
-                                     (swap! processed-files-count-atom inc)
-                                     (subs (.getAbsolutePath file)
-                                           (inc directory-path-length))))
-                              (remove already-hashed-files-set)
-                              (map (fn [path]
-                                     (reset! currently-processed-path-path path)
-                                     (try (.write writer
-                                                  (let [processed-byte-count-before-hashing @processed-byte-count-atom
-                                                        hash (md5 stopped?-atom
-                                                                  processed-byte-count-atom
-                                                                  (str directory-path "/" path))]
-                                                    (str (pr-str {:path path
-                                                                  :md5 hash
-                                                                  :byte-count (- @processed-byte-count-atom
-                                                                                 processed-byte-count-before-hashing)})
-                                                         "\n")))
-                                          (.flush writer)
-                                          (swap! written-hashes-count-atom inc)
-                                          (catch Throwable throwable
-                                            (when (not (= :stopped (:type (ex-data throwable))))
-                                              (swap! error-count-atom inc)
-                                              (println "there was an error when reading file" path ":" (.getMessage throwable))))))))))
-    (if @stopped?-atom
-      (println "Got interrupted.")
-      (println "All files were processed."))
-    (println "Wrote" @written-hashes-count-atom "hashes.")
-    (println "Processed" (format-bytes @processed-byte-count-atom) ". Previously"
-             (format-bytes previously-processed-byte-count) "were processed."
-             (format-bytes (+ previously-processed-byte-count @processed-byte-count-atom)) "in total.")
-    (println "Total runtime was" (milliseconds-to-human-readable-units (- (System/currentTimeMillis)
-                                                                          start-time)))
-    (println @error-count-atom "files had errors.")
-    (when (not (= @written-hashes-count-atom
-                  @processed-files-count-atom))
-      (println (- @processed-files-count-atom
-                  @written-hashes-count-atom) "hashes were already in the target file."))))
+                                (when (some? (:currently-processed-path state))
+                                  (println (str "Currently processing: "
+                                                (:currently-processed-path state)
+                                                " ("
+                                                (format-bytes (.length (File. (str archive-directory-path
+                                                                                   "/"
+                                                                                   (:currently-processed-path state)))))
+                                                ")")))
+                                (recur (:processed-files-count state)
+                                       (:processed-byte-count state))))))))
+       (transduce-files! source-directory-path
+                         (comp (take-until-stopped stopped?-atom)
+                               (map (fn [file]
+                                      (swap! state-atom update :processed-files-count inc)
+                                      (subs (.getAbsolutePath file)
+                                            (inc archive-directory-path-length))))
+                               (remove already-hashed-files-set)
+                               (map (fn [path]
+                                      (swap! state-atom assoc :currently-processed-path path)
+                                      (try (.write writer
+                                                   (let [processed-byte-count-before-hashing (:processed-byte-count @state-atom)
+                                                         hash (md5 stopped?-atom
+                                                                   (fn [processed-byte-count]
+                                                                     (swap! state-atom update :processed-byte-count + processed-byte-count))
+                                                                   (str archive-directory-path "/" path))]
+                                                     (str (pr-str {:path path
+                                                                   :md5 hash
+                                                                   :byte-count (- (:processed-byte-count @state-atom)
+                                                                                  processed-byte-count-before-hashing)})
+                                                          "\n")))
+                                           (.flush writer)
+                                           (swap! state-atom update :written-hashes-count inc)
+                                           (catch Throwable throwable
+                                             (when (not (= :stopped (:type (ex-data throwable))))
+                                               (swap! state-atom update :error-count inc)
+                                               (println "there was an error when reading file" path ":" (.getMessage throwable))))))))))
+     (let [state @state-atom]
+       (if @stopped?-atom
+         (println "Got interrupted.")
+         (println "All files were processed."))
+
+       (reset! stopped?-atom true)
+       (println "Wrote" (:written-hashes-count state) "hashes.")
+       (println "Total runtime was" (milliseconds-to-human-readable-units (- (System/currentTimeMillis)
+
+                                                                             start-time)))
+       (let [processed-byte-count (:processed-byte-count state)]
+         (println "Processed" (format-bytes processed-byte-count) ". Previously"
+
+                  (format-bytes previously-processed-byte-count)
+                  "were processed."
+
+                  (format-bytes (* (/ processed-byte-count
+                                      (- (System/currentTimeMillis)
+                                         start-time))
+                                   1000 60 60))
+                  "per hour"
+
+                  (format-bytes (+ previously-processed-byte-count
+                                   processed-byte-count))
+                  "in total."))
+
+       (println (:error-count state) "files had errors.")
+       (println previously-hashed-file-count "hashes were already in the target file.")))))
 
 (defn compare-hash-files [file-1-path file-2-path]
   (let [file-1-rows (read-hash-file file-1-path)
@@ -280,6 +297,7 @@
 
 (comment
   (.delete (File. "temp/file-hashes"))
+  (write-file-hashes "temp/hashtest" "temp/hashtest/sub1" "temp/file-hashes")
   (write-file-hashes "temp/hashtest" "temp/file-hashes")
   (write-file-hashes "temp/hashtest" "temp/file-hashes-2")
   (compare-hash-files "temp/file-hashes" "temp/file-hashes-2")

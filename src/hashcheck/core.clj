@@ -155,48 +155,53 @@
                            :currently-processed-path nil
                            :error-count 0})
          start-time (System/currentTimeMillis)
-         reporting-interval-in-milliseconds 30000]
+         reporting-interval-in-milliseconds 30000
+         monitoring-thread (Thread. (fn []
+                                      (println "starting monitoring")
+                                      (loop [previously-reported-file-count 0
+                                             previously-reported-byte-count 0]
+                                        (let [state @state-atom]
+                                          (try (Thread/sleep reporting-interval-in-milliseconds)
+                                               (catch Throwable _throwable))
+                                          (when (not @stopped?-atom)
+                                            (println (current-time-stamp)
+                                                     "processed"
+                                                     (- (:processed-files-count state)
+                                                        previously-reported-file-count)
+                                                     "files"
+                                                     (format-bytes (- (:processed-byte-count state)
+                                                                      previously-reported-byte-count))
+                                                     "bytes"
+                                                     (format-bytes (:processed-byte-count state)) "in total"
+                                                     (format-bytes (* (/ (- (:processed-byte-count state)
+                                                                            previously-reported-byte-count)
+                                                                         reporting-interval-in-milliseconds)
+                                                                      1000 60 60))
+                                                     "per hour"
+                                                     (:processed-files-count state) "files in total"
+                                                     previously-hashed-file-count
+                                                     "files were already in the target file"
+                                                     (:error-count state) "files have had errors.")
+
+                                            (when (some? (:currently-processed-path state))
+                                              (println (str "Currently processing: "
+                                                            (:currently-processed-path state)
+                                                            " ("
+                                                            (format-bytes (.length (File. (str archive-directory-path
+                                                                                               "/"
+                                                                                               (:currently-processed-path state)))))
+                                                            ")")))
+                                            (recur (:processed-files-count state)
+                                                   (:processed-byte-count state)))))))]
+
+     (.start monitoring-thread)
      (with-open [writer (io/writer output-file-path :append true)]
        (.addShutdownHook (Runtime/getRuntime)
                          (Thread. (fn []
                                     (reset! stopped?-atom true)
-                                    (Thread/sleep 1000))))
-       (.start (Thread. (fn []
-                          (loop [previously-reported-file-count 0
-                                 previously-reported-byte-count 0]
-                            (let [state @state-atom]
-                              (Thread/sleep reporting-interval-in-milliseconds)
-                              (when (not @stopped?-atom)
-                                (println (current-time-stamp)
-                                         "processed"
-                                         (- (:processed-files-count state)
-                                            previously-reported-file-count)
-                                         "files"
-                                         (format-bytes (- (:processed-byte-count state)
-                                                          previously-reported-byte-count))
-                                         "bytes"
-                                         (format-bytes (:processed-byte-count state)) "in total"
-                                         (format-bytes (* (/ (- (:processed-byte-count state)
-                                                                previously-reported-byte-count)
-                                                             reporting-interval-in-milliseconds)
-                                                          1000 60 60))
-                                         "per hour"
-                                         (:processed-files-count state) "files in total"
-                                         previously-hashed-file-count
-                                         "files were already in the target file")
+                                    (.interrupt monitoring-thread)
+                                    (Thread/sleep 200))))
 
-                                #_(reset! processed-byte-count-atom 0)
-
-                                (when (some? (:currently-processed-path state))
-                                  (println (str "Currently processing: "
-                                                (:currently-processed-path state)
-                                                " ("
-                                                (format-bytes (.length (File. (str archive-directory-path
-                                                                                   "/"
-                                                                                   (:currently-processed-path state)))))
-                                                ")")))
-                                (recur (:processed-files-count state)
-                                       (:processed-byte-count state))))))))
        (transduce-files! source-directory-path
                          (comp (take-until-stopped stopped?-atom)
                                (map (fn [file]
@@ -234,6 +239,7 @@
          (println "All files were processed."))
 
        (reset! stopped?-atom true)
+       (.interrupt monitoring-thread)
        (println "Wrote" (:written-hashes-count state) "hashes.")
        (println "Total runtime was" (milliseconds-to-human-readable-units (- (System/currentTimeMillis)
 

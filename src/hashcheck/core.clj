@@ -161,7 +161,6 @@
          start-time (System/currentTimeMillis)
          reporting-interval-in-milliseconds 30000
          monitoring-thread (Thread. (fn []
-                                      (println "starting monitoring")
                                       (loop [previously-reported-file-count 0
                                              previously-reported-byte-count 0]
                                         (let [state @state-atom]

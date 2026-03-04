@@ -139,7 +139,11 @@
    (write-file-hashes archive-directory-path archive-directory-path output-file-path))
   ([archive-directory-path source-directory-path output-file-path]
    (let [stopped?-atom (atom false)
-         error-file-path (str output-file-path "-errors.edn")
+         error-file-path (str output-file-path
+                              "-errors-"
+                              (.format (java.time.LocalDateTime/now)
+                                       (DateTimeFormatter/ofPattern "YYY-MM-dd-HH-mm-ss"))
+                              ".edn")
          hash-file-rows (if (.exists (File. output-file-path))
                           (read-hash-file output-file-path)
                           [])

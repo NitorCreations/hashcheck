@@ -5,7 +5,8 @@
    [clojure.java.io :as io]
    [clojure.set :as set]
    [clojure.string :as string]
-   [clojure.test :refer [deftest is]])
+   [clojure.test :refer [deftest is]]
+   [medley.core :as medley])
   (:import
    [java.io File FileInputStream]
    [java.security MessageDigest]
@@ -266,33 +267,8 @@
        (println (:error-count state) "files had errors.")
        (println previously-hashed-file-count "hashes were already in the target file.")))))
 
-(defn compare-hash-files [file-1-path file-2-path]
-  (let [file-1-rows (read-hash-file file-1-path)
-        file-2-rows (read-hash-file file-2-path)]
-    (println "First file is missing" (count (set/difference (set (map :path file-2-rows))
-                                                            (set (map :path file-1-rows))))
-             "paths.")
-    (println "Second file is missing" (count (set/difference (set (map :path file-1-rows))
-                                                             (set (map :path file-2-rows))))
-             "paths.")
-    (println (let [file-1-paths-to-hashes (->> file-1-rows
-                                               (map (juxt :path :md5))
-                                               (into {}))
-                   file-2-paths-to-hashes (->> file-2-rows
-                                               (map (juxt :path :md5))
-                                               (into {}))]
-               (->> (set/intersection (set (map :path file-1-rows))
-                                      (set (map :path file-2-rows)))
-                    (remove (fn [path]
-                              (= (get file-1-paths-to-hashes path)
-                                 (get file-2-paths-to-hashes path))))
-                    (count)))
-             "hashes are differing.")))
-
-(defn list-differing-hashes [file-1-path file-2-path]
-  (let [file-1-rows (read-hash-file file-1-path)
-        file-2-rows (read-hash-file file-2-path)
-        file-1-paths-to-hashes (->> file-1-rows
+(defn differing-files [file-1-rows file-2-rows]
+  (let [file-1-paths-to-hashes (->> file-1-rows
                                     (map (juxt :path :md5))
                                     (into {}))
         file-2-paths-to-hashes (->> file-2-rows
@@ -302,15 +278,88 @@
                            (set (map :path file-2-rows)))
          (remove (fn [path]
                    (= (get file-1-paths-to-hashes path)
-                      (get file-2-paths-to-hashes path))))
-         (map (fn [path]
-                {:path path
-                 :file-1-md5 (get file-1-paths-to-hashes path)
-                 :file-2-md5 (get file-2-paths-to-hashes path)})))))
+                      (get file-2-paths-to-hashes path)))))))
+
+(defn compare-hash-files [hash-file-1-path hash-file-2-path]
+  (let [file-1-rows (read-hash-file hash-file-1-path)
+        file-2-rows (read-hash-file hash-file-2-path)]
+    (println "First file is missing" (count (set/difference (set (map :path file-2-rows))
+                                                            (set (map :path file-1-rows))))
+             "paths.")
+    (println "Second file is missing" (count (set/difference (set (map :path file-1-rows))
+                                                             (set (map :path file-2-rows))))
+             "paths.")
+    (println (->> (differing-files file-1-rows file-2-rows)
+                  (count))
+             "hashes are differing.")))
+
+(defn list-differing-hashes [hash-file-1-path hash-file-2-path]
+  (let [file-1-rows (read-hash-file hash-file-1-path)
+        file-2-rows (read-hash-file hash-file-2-path)
+        file-1-paths-to-hashes (->> file-1-rows
+                                    (map (juxt :path :md5))
+                                    (into {}))
+        file-2-paths-to-hashes (->> file-2-rows
+                                    (map (juxt :path :md5))
+                                    (into {}))]
+
+    (->> (differing-files file-1-rows
+                          file-2-rows)
+         (run! (fn [path]
+                 (prn {:path path
+                       :file-1-md5 (get file-1-paths-to-hashes path)
+                       :file-2-md5 (get file-2-paths-to-hashes path)}))))))
+
+(defn file-extension [file-name]
+  (second (re-find #"\.([^\.]+)$"
+                   file-name)))
+
+(deftest test-file-extension
+  (is (= "bar"
+         (file-extension "foo.bar")))
+
+  (is (= "bAr"
+         (file-extension "foo.bAr")))
+
+  (is (= "loo"
+         (file-extension "foo/bar.baz.loo"))))
 
 
+(defn statistics-for-rows [rows]
+  {:count (count rows)
+   :byte-count (reduce + (map :byte-count rows))})
+
+(defn format-statistics [{:keys [count byte-count]}]
+  (str count " files " (format-bytes byte-count) ))
+
+(defn print-statistics-for-rows [rows]
+  (println "total:" (format-statistics (statistics-for-rows rows)))
+  (doseq [[file-extension statistics] (->> rows
+                                           (group-by (comp file-extension string/lower-case :path))
+                                           (medley/map-vals statistics-for-rows)
+                                           (sort-by (comp :byte-count second))
+                                           (reverse))]
+    (println (str (or file-extension
+                      "no file extension") ": " (format-statistics statistics)))))
+
+(deftest test-print-statistics-for-rows
+  (is (= "total: 3 files 14B
+bar: 2 files 8B
+no file extension: 1 files 6B
+"
+         (with-out-str (print-statistics-for-rows '({:path "sub1/hello",
+                                                     :byte-count 6}
+                                                    {:path "hello.bar",
+                                                     :byte-count 3}
+                                                    {:path "foo.bar",
+                                                     :byte-count 5}))))))
+
+(defn print-statistics [hash-file-path]
+  (print-statistics-for-rows (read-hash-file hash-file-path)))
 
 (comment
+  (read-hash-file "temp/file-hashes")
+  (print-statistics "temp/file-hashes")
   (.delete (File. "temp/file-hashes"))
   (write-file-hashes "temp/hashtest" "temp/hashtest/sub1" "temp/file-hashes")
   (write-file-hashes "temp/hashtest" "temp/file-hashes")
@@ -321,7 +370,8 @@
 
 (def commands [#'write-file-hashes
                #'compare-hash-files
-               #'list-differing-hashes])
+               #'list-differing-hashes
+               #'print-statistics])
 
 (defn -main [& command-line-arguments]
   (let [[command-name & arguments] command-line-arguments]

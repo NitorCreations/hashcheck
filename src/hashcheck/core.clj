@@ -136,12 +136,16 @@
            (DateTimeFormatter/ofPattern "HH:mm:ss")))
 
 (defn write-file-hashes
-  "Write hashes to a file. The writing can be interrupted with ctrl-c and resumed later on.
+  "Write hashes to a file. The writing can be interrupted with ctrl-c
+  and resumed later on.
 
   example:
+
   hashcheck write-file-hashes target target-hashes.edn
 
-  To write hashes of only some part of the whole archive, add the subdirectory as the second argument:
+  To write hashes of only some part of the whole archive, add the
+  subdirectory as the second argument:
+
   hashcheck write-file-hashes target target/classes target-hashes.edn"
   ([archive-directory-path output-file-path]
    (write-file-hashes archive-directory-path archive-directory-path output-file-path))

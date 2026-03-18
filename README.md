@@ -13,7 +13,7 @@ drive, this can easily take days because the files can not be read in
 the order they reside the disk and the read head has to constantly
 jump around.
 
-[hashdeep|https://github.com/jessek/hashdeep] is another similar
+[hashdeep](https://github.com/jessek/hashdeep) is another similar
 tool. The main difference is that hashcheck can be interrupted and can
 resume the hash calculation.
 

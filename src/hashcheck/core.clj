@@ -136,6 +136,13 @@
            (DateTimeFormatter/ofPattern "HH:mm:ss")))
 
 (defn write-file-hashes
+  "Write hashes to a file. The writing can be interrupted with ctrl-c and resumed later on.
+
+  example:
+  hashcheck write-file-hashes target target-hashes.edn
+
+  To write hashes of only some part of the whole archive, add the subdirectory as the second argument:
+  hashcheck write-file-hashes target target/classes target-hashes.edn"
   ([archive-directory-path output-file-path]
    (write-file-hashes archive-directory-path archive-directory-path output-file-path))
   ([archive-directory-path source-directory-path output-file-path]
@@ -280,7 +287,9 @@
                    (= (get file-1-paths-to-hashes path)
                       (get file-2-paths-to-hashes path)))))))
 
-(defn compare-hash-files [hash-file-1-path hash-file-2-path]
+(defn compare-hash-files
+  "Sum up differences between hash files as numbers."
+  [hash-file-1-path hash-file-2-path]
   (let [file-1-rows (read-hash-file hash-file-1-path)
         file-2-rows (read-hash-file hash-file-2-path)]
     (println "First file is missing" (count (set/difference (set (map :path file-2-rows))
@@ -293,7 +302,9 @@
                   (count))
              "hashes are differing.")))
 
-(defn list-differing-hashes [hash-file-1-path hash-file-2-path]
+(defn list-differing-hashes
+  "List files with differing hashes."
+  [hash-file-1-path hash-file-2-path]
   (let [file-1-rows (read-hash-file hash-file-1-path)
         file-2-rows (read-hash-file hash-file-2-path)
         file-1-paths-to-hashes (->> file-1-rows
@@ -354,7 +365,9 @@ no file extension: 1 files 6B
                                                     {:path "foo.bar",
                                                      :byte-count 5}))))))
 
-(defn print-statistics [hash-file-path]
+(defn print-statistics
+  "Print how many files and how many bytes there are by file extension."
+  [hash-file-path]
   (print-statistics-for-rows (read-hash-file hash-file-path)))
 
 (comment
@@ -386,13 +399,13 @@ no file extension: 1 files 6B
           (shutdown-agents) ;; see https://clojureverse.org/t/why-doesnt-my-program-exit/3754/2
           )
 
-      (do (println "Usage:")
-          (println "------------------------")
+      (do (println "Usage:\n")
           (println (->> commands
                         (map (fn [command-var]
                                (str (:name (meta command-var))
                                     ": "
                                     (:arglists (meta command-var))
-                                    "\n"
+                                    "\n\n  "
+
                                     (:doc (meta command-var)))))
-                        (string/join "------------------------\n")))))))
+                        (string/join "\n\n")))))))

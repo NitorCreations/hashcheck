@@ -100,6 +100,15 @@
          (map edn/read-string)
          (doall))))
 
+
+(defn read-error-file [file-path]
+  (with-open [reader (java.io.PushbackReader. (io/reader file-path))]
+    (loop [values []]
+      (if-some [value (edn/read {:eof nil}
+                                reader)]
+        (recur (conj values value))
+        values))))
+
 (defn milliseconds-to-human-readable-units
   "Convert milliseconds to hours, minutes, and seconds."
   [milliseconds]

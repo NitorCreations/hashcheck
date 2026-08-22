@@ -298,6 +298,14 @@
   [hash-file-1-path hash-file-2-path]
   (let [file-1-rows (read-hash-file hash-file-1-path)
         file-2-rows (read-hash-file hash-file-2-path)]
+    (println "First file is missing these paths3")
+    (run! println (set/difference (set (map :path file-2-rows))
+                                  (set (map :path file-1-rows))))
+
+    (println "Second file is missing these paths:")
+    (run! println (set/difference (set (map :path file-1-rows))
+                                  (set (map :path file-2-rows))))
+
     (println "First file is missing" (count (set/difference (set (map :path file-2-rows))
                                                             (set (map :path file-1-rows))))
              "paths.")

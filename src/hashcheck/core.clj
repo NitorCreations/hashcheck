@@ -256,8 +256,9 @@
                                                (swap! state-atom update :error-count inc)
                                                (println "there was an error when reading file" path ":" (.getMessage throwable))
                                                (spit error-file-path
-                                                     (pr-str {:path path
-                                                              :error-message (.getMessage throwable)})
+                                                     (str (pr-str {:path path
+                                                                   :error-message (.getMessage throwable)})
+                                                          "\n")
                                                      :append true)))))))))
 
      (let [state @state-atom]

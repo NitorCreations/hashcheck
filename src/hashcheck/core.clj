@@ -9,6 +9,7 @@
    [medley.core :as medley])
   (:import
    [java.io File FileInputStream]
+   [java.nio.file Files]
    [java.security MessageDigest]
    [java.time LocalTime]
    [java.time.format DateTimeFormatter]))

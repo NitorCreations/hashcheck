@@ -60,7 +60,9 @@
   (transduce-leaves (File. directory-path)
                     (fn [file]
                       (when (.isDirectory file)
-                        (.listFiles file)))
+                        (->> (.listFiles file)
+                             (remove (comp Files/isSymbolicLink
+                                           File/.toPath)))))
                     (constantly nil)
                     nil
                     transducer))
